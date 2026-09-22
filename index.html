@@ -218,6 +218,9 @@ textarea#recapText{min-height:270px;font-family:var(--f-mono);font-size:12.5px;l
 #dlgZoom .dlg-body{padding-top:14px}
 #zoomImg{width:100%;height:auto;display:block;border-radius:10px;background:var(--surface-2)}
 #zoomCap{font-size:13px;color:var(--muted);margin-top:8px;text-align:center}
+.tagmini{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;color:var(--muted);background:var(--chip);padding:3px 7px;border-radius:6px}
+.tierhint{margin-top:8px;padding:9px 14px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:10px;font-size:13px;color:var(--ink)}
+.board{grid-template-columns:repeat(auto-fit,minmax(138px,1fr))}
 .hero-cta{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 .btn.big{padding:11px 18px;font-size:15px;border-radius:10px}
 
@@ -250,9 +253,15 @@ textarea#recapText{min-height:270px;font-family:var(--f-mono);font-size:12.5px;l
       <label for="ship">Frais de port ($)</label>
       <input id="ship" type="number" step="0.01" min="0" inputmode="decimal" aria-label="Frais de port totaux en dollars">
     </div>
-    <span style="font-size:12px;color:var(--muted)">répartis au prorata du nombre d'articles</span>
+    <div class="field">
+      <label for="disc">Remise (%)</label>
+      <input id="disc" type="number" step="0.1" min="0" max="100" inputmode="decimal" aria-label="Remise groupée en pourcentage">
+      <span class="tagmini" id="discMode">palier auto</span>
+      <button type="button" class="btn sm ghost" id="discAuto" data-act="disc-auto" hidden>revenir au palier auto</button>
+    </div>
     <div class="steps" id="steps" role="group" aria-label="Avancement de la commande"></div>
   </div>
+  <div class="tierhint" id="tierHint" hidden></div>
 
   <div id="setup" hidden>
     <h3>Base de données à configurer</h3>
@@ -283,7 +292,7 @@ textarea#recapText{min-height:270px;font-family:var(--f-mono);font-size:12.5px;l
   </section>
 
   <footer class="foot">
-    <span>Les prix sont ceux du site, en dollars. Les montants en euros servent de base au règlement. Les frais de port sont répartis au prorata du nombre d'articles.</span>
+    <span>Ordre de calcul : prix du site en dollars, puis remise de volume sur les maillots, puis frais de port répartis au prorata du nombre d'articles, puis conversion en euros. Paliers du site : 3 à 6 articles 10 %, 7 à 15 articles 15 %, 16 à 50 articles 17 %. Le champ Remise permet de forcer un autre taux si la négociation aboutit.</span>
   </footer>
 </div>
 
@@ -410,7 +419,7 @@ var STEPS=[["collecte","En collecte"],["commandee","Commande passée"],["recue",
 var eur=new Intl.NumberFormat("fr-FR",{style:"currency",currency:"EUR"});
 var usd=new Intl.NumberFormat("fr-FR",{style:"currency",currency:"USD"});
 
-var sb=null,rows=[],cfg={orderName:"Commande maillots",rate:0.87,shippingUsd:0,status:"collecte"};
+var sb=null,rows=[],cfg={orderName:"Commande maillots",rate:0.87,shippingUsd:0,status:"collecte",discountPct:null};
 var people=[],items=[];
 var editPerson=null,editItem=null,payPerson=null,pickedKit=0,confirmResolve=null,meId="";
 
@@ -455,22 +464,37 @@ function itemUsd(it){
   var q=Number(it.qty)||1;
   return ((Number(it.basePriceUsd)||0)+(Number(it.sizeExtraUsd)||0)+(Number(it.patchUsd)||0)+(Number(it.flockUsd)||0))*q;
 }
+function tierFor(qty){
+  if(qty>=16)return {pct:17,label:"16 \u00e0 50 articles"};
+  if(qty>=7)return {pct:15,label:"7 \u00e0 15 articles"};
+  if(qty>=3)return {pct:10,label:"3 \u00e0 6 articles"};
+  return {pct:0,label:"moins de 3 articles"};
+}
+function effDiscount(totalQty){
+  var auto=tierFor(totalQty);
+  var manual=(cfg.discountPct===null||cfg.discountPct===undefined||cfg.discountPct==="")?null:Number(cfg.discountPct);
+  var pct=(manual===null||isNaN(manual))?auto.pct:manual;
+  return {pct:Math.min(100,Math.max(0,pct)),auto:auto,isAuto:(manual===null||isNaN(manual))};
+}
 function compute(){
   var ship=Number(cfg.shippingUsd)||0,rate=Number(cfg.rate)||0;
   var totalQty=items.reduce(function(a,i){return a+(Number(i.qty)||1)},0);
-  var map={},tot={qty:0,sub:0,usd:0,eur:0,paid:0,due:0};
+  var dsc=effDiscount(totalQty);
+  var map={},tot={qty:0,sub:0,disc:0,subNet:0,usd:0,eur:0,paid:0,due:0};
   people.forEach(function(p){
     var its=items.filter(function(i){return i.personId===p.id});
     its.sort(function(a,b){return (a.createdAt||0)-(b.createdAt||0)});
     var qty=its.reduce(function(a,i){return a+(Number(i.qty)||1)},0);
     var sub=its.reduce(function(a,i){return a+itemUsd(i)},0);
+    var disc=r2(sub*dsc.pct/100),subNet=r2(sub-disc);
     var share=totalQty?ship*qty/totalQty:0;
-    var u=sub+share,e=r2(u*rate),paid=r2(p.paidEur),due=r2(e-paid);
-    map[p.id]={its:its,qty:qty,sub:sub,share:share,usd:u,eur:e,paid:paid,due:due};
-    tot.qty+=qty;tot.sub+=sub;tot.usd+=u;tot.eur=r2(tot.eur+e);tot.paid=r2(tot.paid+paid);tot.due=r2(tot.due+due);
+    var u=subNet+share,e=r2(u*rate),paid=r2(p.paidEur),due=r2(e-paid);
+    map[p.id]={its:its,qty:qty,sub:sub,disc:disc,subNet:subNet,share:share,usd:u,eur:e,paid:paid,due:due};
+    tot.qty+=qty;tot.sub=r2(tot.sub+sub);tot.disc=r2(tot.disc+disc);tot.subNet=r2(tot.subNet+subNet);
+    tot.usd+=u;tot.eur=r2(tot.eur+e);tot.paid=r2(tot.paid+paid);tot.due=r2(tot.due+due);
   });
   var orphan=items.filter(function(i){return !people.some(function(p){return p.id===i.personId})});
-  return {map:map,tot:tot,totalQty:totalQty,orphan:orphan};
+  return {map:map,tot:tot,totalQty:totalQty,orphan:orphan,dsc:dsc};
 }
 function status(p,c){
   if(!p.validated)return {k:"todo",l:"à valider"};
@@ -484,12 +508,22 @@ function cell(k,v,s,cls){
   return '<div class="cell '+cls+'"><span class="k">'+esc(k)+'</span><div class="v">'+esc(v)+'</div><div class="s">'+esc(s)+'</div></div>';
 }
 function renderBoard(c){
+  var d=c.dsc;
   $("board").innerHTML=
    cell("Articles",c.tot.qty,people.length+" participant"+(people.length>1?"s":""),"")+
+   cell("Maillots",usd.format(c.tot.sub),"avant remise","")+
+   cell("Remise",(c.tot.disc>0?"-":"")+usd.format(c.tot.disc),d.pct>0?(d.pct.toLocaleString("fr-FR")+" % "+(d.isAuto?"(palier "+d.auto.label+")":"(taux forc\u00e9)")):"aucun palier atteint",c.tot.disc>0?"good":"")+
    cell("Total commande",usd.format(c.tot.usd),"dont "+usd.format(Number(cfg.shippingUsd)||0)+" de port","")+
    cell("Soit en euros",eur.format(c.tot.eur),"au taux de "+(Number(cfg.rate)||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:3}),"")+
-   cell("Encaissé",eur.format(c.tot.paid),c.tot.eur>0?Math.round(c.tot.paid/c.tot.eur*100)+" % du total":"rien à encaisser","good")+
-   cell("Reste dû",eur.format(c.tot.due),c.tot.due>0.01?"à récupérer":"tout est réglé",c.tot.due>0.01?"hi":"good");
+   cell("Encaiss\u00e9",eur.format(c.tot.paid),c.tot.eur>0?Math.round(c.tot.paid/c.tot.eur*100)+" % du total":"rien \u00e0 encaisser","good")+
+   cell("Reste d\u00fb",eur.format(c.tot.due),c.tot.due>0.01?"\u00e0 r\u00e9cup\u00e9rer":"tout est r\u00e9gl\u00e9",c.tot.due>0.01?"hi":"good");
+  var nextTxt="";
+  if(c.totalQty<3)nextTxt="Encore "+(3-c.totalQty)+" article"+(3-c.totalQty>1?"s":"")+" pour d\u00e9clencher 10 %.";
+  else if(c.totalQty<7)nextTxt="Encore "+(7-c.totalQty)+" article"+(7-c.totalQty>1?"s":"")+" pour passer \u00e0 15 %.";
+  else if(c.totalQty<16)nextTxt="Encore "+(16-c.totalQty)+" article"+(16-c.totalQty>1?"s":"")+" pour passer \u00e0 17 %.";
+  else if(c.totalQty>50)nextTxt="Attention : au-del\u00e0 de 50 articles, le palier affich\u00e9 sur le site ne s\u0027applique plus, \u00e0 v\u00e9rifier au moment de commander.";
+  $("tierHint").textContent=nextTxt;
+  $("tierHint").hidden=!nextTxt;
 }
 function renderSteps(){
   $("steps").innerHTML=STEPS.map(function(s){
@@ -556,6 +590,7 @@ function renderDetail(c){
       '<ul class="items">'+rows2+'</ul>'+
       '<div class="p-foot">'+
         '<div><span class="l">Maillots</span><span class="n">'+esc(usd.format(cc.sub))+'</span></div>'+
+        (cc.disc>0?'<div><span class="l">Remise '+c.dsc.pct.toLocaleString("fr-FR")+' %</span><span class="n ok">-'+esc(usd.format(cc.disc))+'</span></div>':"")+
         '<div><span class="l">Part du port</span><span class="n">'+esc(usd.format(cc.share))+'</span></div>'+
         '<div><span class="l">Total</span><span class="n">'+esc(eur.format(cc.eur))+'</span></div>'+
         '<div><span class="l">Déjà reçu</span><span class="n">'+esc(eur.format(cc.paid))+'</span></div>'+
@@ -573,6 +608,10 @@ function syncInputs(){
   if(a!==$("orderName"))$("orderName").value=cfg.orderName||"";
   if(a!==$("rate"))$("rate").value=cfg.rate;
   if(a!==$("ship"))$("ship").value=cfg.shippingUsd;
+  var d=effDiscount(items.reduce(function(x,i){return x+(Number(i.qty)||1)},0));
+  if(a!==$("disc"))$("disc").value=d.pct;
+  $("discAuto").hidden=d.isAuto;
+  $("discMode").textContent=d.isAuto?"palier auto":"forc\u00e9";
 }
 function render(){
   var c=compute();
@@ -619,7 +658,7 @@ function setStatus(txt,cls){
 }
 function saveCfg(patch){
   cfg=Object.assign({},cfg,patch);render();
-  push("config","config",{orderName:cfg.orderName,rate:Number(cfg.rate)||0,shippingUsd:Number(cfg.shippingUsd)||0,status:cfg.status});
+  push("config","config",{orderName:cfg.orderName,rate:Number(cfg.rate)||0,shippingUsd:Number(cfg.shippingUsd)||0,status:cfg.status,discountPct:(cfg.discountPct===null||cfg.discountPct==="")?null:Number(cfg.discountPct)});
 }
 function savePerson(p){
   var d=Object.assign({},p);delete d.id;
@@ -686,6 +725,7 @@ function recapFor(p,c){
   if(!cc.its.length)L.push("(aucun maillot enregistré pour l'instant)");
   L.push("");
   L.push("Sous-total maillots : "+usd.format(cc.sub));
+  if(cc.disc>0){L.push("Remise group\u00e9e "+c.dsc.pct.toLocaleString("fr-FR")+" % : -"+usd.format(cc.disc));L.push("Sous-total apr\u00e8s remise : "+usd.format(cc.subNet));}
   if((Number(cfg.shippingUsd)||0)>0)L.push("Part des frais de port ("+cc.qty+" article"+(cc.qty>1?"s":"")+" sur "+c.totalQty+") : "+usd.format(cc.share));
   L.push("Total : "+usd.format(cc.usd)+" soit "+eur.format(cc.eur)+" (1 $ = "+(Number(cfg.rate)||0).toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:3})+" €)");
   if(cc.paid>0.01)L.push("Déjà réglé : "+eur.format(cc.paid));
@@ -701,6 +741,7 @@ function recapAll(c){
     L.push("- "+p.name+" : "+cc.qty+" maillot"+(cc.qty>1?"s":"")+", "+eur.format(cc.eur)+", reste "+eur.format(cc.due)+" ("+st.l+")");
   });
   L.push("");
+  if(c.tot.disc>0)L.push("Remise group\u00e9e appliqu\u00e9e : "+c.dsc.pct.toLocaleString("fr-FR")+" %, soit -"+usd.format(c.tot.disc)+" sur l'ensemble.");
   L.push("Total commande : "+usd.format(c.tot.usd)+" soit "+eur.format(c.tot.eur)+".");
   L.push("Encaissé : "+eur.format(c.tot.paid)+". Reste à récupérer : "+eur.format(c.tot.due)+".");
   return L.join("\n");
@@ -754,6 +795,7 @@ document.addEventListener("click",function(ev){
   if(act==="recap-all"){showRecap("Récap global",recapAll(c));return}
   if(act==="goto"){var t=$("p-"+id);if(t)t.scrollIntoView({behavior:"smooth",block:"start"});return}
   if(act==="step"){saveCfg({status:b.dataset.v});return}
+  if(act==="disc-auto"){saveCfg({discountPct:null});return}
   if(act==="pay-full"){$("payAmt").value=$("payAmt").dataset.full;return}
   if(act==="pay-zero"){$("payAmt").value=0;return}
   if(act==="del-person"){
@@ -811,11 +853,12 @@ $("formItem").addEventListener("submit",function(){
 $("formPay").addEventListener("submit",function(){
   if(payPerson)savePerson(Object.assign({},payPerson,{paidEur:r2($("payAmt").value)}));
 });
-["orderName","rate","ship"].forEach(function(idv){
+["orderName","rate","ship","disc"].forEach(function(idv){
   $(idv).addEventListener("change",function(){
     if(idv==="orderName")saveCfg({orderName:$("orderName").value.trim()});
     if(idv==="rate")saveCfg({rate:Math.max(0,Number($("rate").value)||0)});
     if(idv==="ship")saveCfg({shippingUsd:Math.max(0,Number($("ship").value)||0)});
+    if(idv==="disc")saveCfg({discountPct:Math.min(100,Math.max(0,Number($("disc").value)||0))});
   });
 });
 
