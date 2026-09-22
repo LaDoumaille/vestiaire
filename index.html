@@ -204,7 +204,9 @@ textarea#recapText{min-height:270px;font-family:var(--f-mono);font-size:12.5px;l
 #setup{background:var(--surface);border:1px solid var(--due);border-radius:var(--r);padding:16px 18px;margin-top:16px;font-size:14px;line-height:1.6}
 #setup h3{font-family:var(--f-disp);text-transform:uppercase;font-size:19px;margin-bottom:6px}
 #setup code{font-family:var(--f-mono);font-size:12.5px;background:var(--surface-2);padding:1px 5px;border-radius:5px}
+.thumb{width:66px;height:84px}
 .thumb img{cursor:zoom-in}
+.thumb svg{border-radius:7px}
 .grabrow{display:flex;gap:8px;align-items:flex-end}
 .grabrow .inp{flex:1;min-width:0}
 .grabrow .btn{margin-bottom:1px;white-space:nowrap}
@@ -513,7 +515,7 @@ function renderSquad(c){
   }).join("");
   html+='<button class="jersey add" data-act="add-person"><span class="add-plus">+</span><span style="font-size:12.5px;font-weight:500">Ajouter quelqu\'un</span></button>';
   $("squad").innerHTML=html;
-  $("squadCount").textContent=people.length?people.length+" personnes, "+c.tot.qty+" articles":"personne pour l'instant";
+  $("squadCount").textContent=people.length?people.length+" personne"+(people.length>1?"s":"")+", "+c.tot.qty+" article"+(c.tot.qty>1?"s":""):"personne pour l'instant";
 }
 function itemRow(it,p){
   var k=kit(it.kit!=null?it.kit:p.kit),ab=abbr(it.label);
